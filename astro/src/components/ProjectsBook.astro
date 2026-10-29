@@ -1,0 +1,183 @@
+---
+/*
+ * The 3D projects book on /projects/ (src/scripts/portfolio-book.ts).
+ * One spread per published project: Scan-to-CAD first, then the Capture lab,
+ * in the same order as the lists below it. A project's `bookModel` (a GLB)
+ * floats over its right-hand page; projects without one show their photo.
+ *
+ * three.js is only downloaded when the book scrolls near the viewport, and
+ * the project grid below still covers everything if WebGL is unavailable.
+ */
+import { getImage } from 'astro:assets';
+import type { CollectionEntry } from 'astro:content';
+import { postUrl, scanFileName, scanNumber, scanSpecs } from '../lib/posts';
+import { QUOTE_PAGE } from '../consts';
+import type { BookProject } from '../scripts/book-pages';
+
+interface Props {
+	posts: CollectionEntry<'posts'>[];
+}
+const { posts } = Astro.props;
+
+const ordered = [...posts.filter((p) => p.data.kind === 'client'), ...posts.filter((p) => p.data.kind === 'lab')];
+const projects: BookProject[] = await Promise.all(
+	ordered.map(async (post) => {
+		const image = post.data.featuredImage ? await getImage({ src: post.data.featuredImage, width: 900, format: 'webp' }) : null;
+		return {
+			number: scanNumber(post, posts),
+			title: post.data.title,
+			description: post.data.description,
+			deliverable: post.data.deliverable,
+			fileName: scanFileName(post),
+			group: post.data.kind === 'client' ? 'Scan-to-CAD' : 'Capture lab',
+			url: postUrl(post),
+			image: image?.src ?? null,
+			imageAlt: post.data.featuredImageAlt,
+			model: post.data.bookModel,
+			specs: scanSpecs(post),
+		};
+	}),
+);
+// Escaped so nothing in a post's text can close the <script> tag early
+const data = JSON.stringify(projects).replace(/</g, '\\u003c');
+---
+
+<section class="book" data-projects-book aria-roledescription="flip book" aria-label="Projects book">
+	<div class="book__stage" data-book-stage></div>
+	<div class="book__ui">
+		<p class="book__status mono" aria-live="polite">
+			<span data-book-status>Closed</span>
+			<span class="book__label" data-book-label>Loading</span>
+		</p>
+		<div class="book__controls">
+			<button type="button" class="btn btn--solid" data-book-open disabled>Open the book</button>
+			<button type="button" class="btn btn--outline book__btn" data-book-back hidden>← Back</button>
+			<a class="btn btn--outline book__btn" data-book-read href="/projects/" hidden>Read the write-up</a>
+			<button type="button" class="btn btn--solid" data-book-next hidden>Next →</button>
+			<a class="btn btn--accent" data-book-quote href={QUOTE_PAGE} hidden>Request a quote</a>
+			<button type="button" class="btn book__ghost" data-book-close hidden>Close</button>
+		</div>
+	</div>
+	<script type="application/json" data-book-data set:html={data} />
+</section>
+
+<script>
+	import type { BookProject } from '../scripts/book-pages';
+
+	for (const root of document.querySelectorAll<HTMLElement>('[data-projects-book]')) {
+		const raw = root.querySelector('[data-book-data]')?.textContent;
+		if (!raw) continue;
+		const projects = JSON.parse(raw) as BookProject[];
+		// Download three.js and build the scene only when the book is about to be seen
+		const io = new IntersectionObserver(
+			(entries) => {
+				if (!entries.some((e) => e.isIntersecting)) return;
+				io.disconnect();
+				import('../scripts/portfolio-book').then(({ mountBook }) => mountBook(root, projects));
+			},
+			{ rootMargin: '400px' },
+		);
+		io.observe(root);
+	}
+</script>
+
+<style>
+	/* Full-bleed: the scene runs to the edges of the viewport (html clips the
+	   overflow), with no panel edge. Its background is the page's own, and the
+	   stage's edges are masked out so the room fades into the page. */
+	.book {
+		position: relative;
+		width: 100vw;
+		margin: 0 calc(50% - 50vw) var(--sp-80);
+		height: min(88vh, 56rem);
+		min-height: 28rem;
+		overflow: hidden;
+		background: var(--bg); /* = BACKGROUND in book-scene.ts, shown while it loads */
+		/* Controls line up with the text column above and below */
+		--book-inset: max(var(--gutter), calc((100vw - var(--wide)) / 2));
+	}
+	.book__stage {
+		position: absolute;
+		inset: 0;
+		--fade-x: 14%;
+		--fade-y: 16%;
+		-webkit-mask-image:
+			linear-gradient(to right, transparent, #000 var(--fade-x), #000 calc(100% - var(--fade-x)), transparent),
+			linear-gradient(to bottom, transparent, #000 var(--fade-y), #000 calc(100% - var(--fade-y)), transparent);
+		-webkit-mask-composite: source-in;
+		mask-image:
+			linear-gradient(to right, transparent, #000 var(--fade-x), #000 calc(100% - var(--fade-x)), transparent),
+			linear-gradient(to bottom, transparent, #000 var(--fade-y), #000 calc(100% - var(--fade-y)), transparent);
+		mask-composite: intersect;
+	}
+	.book__stage :global(canvas) {
+		display: block;
+	}
+	.book__stage:global(.is-pointing) {
+		cursor: pointer;
+	}
+	.book__ui {
+		position: absolute;
+		inset: 0;
+		z-index: 1;
+		display: flex;
+		flex-direction: column;
+		justify-content: space-between;
+		padding: var(--sp-30) var(--book-inset) var(--sp-40);
+		pointer-events: none;
+	}
+	.book__ui > * {
+		pointer-events: auto;
+	}
+	.book__status {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: space-between;
+		gap: 0.5rem 1rem;
+	}
+	.book__label {
+		color: var(--grey-1);
+	}
+	.book__controls {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: center;
+		gap: 0.5rem;
+	}
+	.book__controls [hidden] {
+		display: none;
+	}
+	.book__btn {
+		background: color-mix(in srgb, var(--bg) 70%, transparent);
+		-webkit-backdrop-filter: blur(8px);
+		backdrop-filter: blur(8px);
+	}
+	.book__btn:hover {
+		background: var(--ink);
+		color: var(--bg);
+	}
+	.book__ghost {
+		border: 1px solid transparent;
+		background: transparent;
+		color: var(--grey-1);
+	}
+	.book__ghost:hover {
+		color: var(--ink);
+	}
+	.book__controls :disabled {
+		opacity: 0.5;
+		cursor: default;
+	}
+
+	@media (max-width: 760px) {
+		.book {
+			height: 74vh;
+			min-height: 26rem;
+		}
+		/* A phone is already edge to edge: a short side fade keeps the book large */
+		.book__stage {
+			--fade-x: 5%;
+			--fade-y: 12%;
+		}
+	}
+</style>
